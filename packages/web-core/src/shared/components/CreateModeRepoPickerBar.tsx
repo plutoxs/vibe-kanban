@@ -39,6 +39,14 @@ function toRepoItem(repo: Repo): RepoItem {
   };
 }
 
+function toRepoItemWithPath(repo: Repo): RepoItem {
+  const displayName = repo.display_name || repo.name;
+  return {
+    id: repo.id,
+    display_name: `${displayName} - ${repo.path}`,
+  };
+}
+
 function toBranchItem(branch: {
   name: string;
   is_current: boolean;
@@ -213,6 +221,27 @@ export function CreateModeRepoPickerBar({
     [addRepo, pickBranchForRepo, selectedRepoIds, setTargetBranch]
   );
 
+  const chooseRepoFromList = useCallback(
+    async (availableRepos: Repo[], includePathInLabel = false) => {
+      const toSelectionItem = includePathInLabel
+        ? toRepoItemWithPath
+        : toRepoItem;
+      const repoResult = (await SelectionDialog.show({
+        initialPageId: 'selectRepo',
+        pages: buildRepoSelectionPages(
+          availableRepos.map(toSelectionItem)
+        ) as Record<string, SelectionPage>,
+      })) as RepoSelectionResult | undefined;
+
+      if (!repoResult?.repoId) return null;
+
+      return (
+        availableRepos.find((repo) => repo.id === repoResult.repoId) ?? null
+      );
+    },
+    []
+  );
+
   const handleChooseRepo = useCallback(async () => {
     await runPickerAction(
       'choose',
@@ -229,25 +258,19 @@ export function CreateModeRepoPickerBar({
           return;
         }
 
-        const repoResult = (await SelectionDialog.show({
-          initialPageId: 'selectRepo',
-          pages: buildRepoSelectionPages(
-            availableRepos.map(toRepoItem)
-          ) as Record<string, SelectionPage>,
-        })) as RepoSelectionResult | undefined;
-
-        if (!repoResult?.repoId) return;
-
-        const selectedRepo = availableRepos.find(
-          (repo) => repo.id === repoResult.repoId
-        );
+        const selectedRepo = await chooseRepoFromList(availableRepos);
         if (!selectedRepo) return;
 
         await addRepoWithBranchSelection(selectedRepo);
       },
       'Failed to load repositories or branches'
     );
-  }, [addRepoWithBranchSelection, runPickerAction, selectedRepoIds]);
+  }, [
+    addRepoWithBranchSelection,
+    chooseRepoFromList,
+    runPickerAction,
+    selectedRepoIds,
+  ]);
 
   const handleBrowseRepo = useCallback(async () => {
     await runPickerAction(
@@ -316,13 +339,23 @@ export function CreateModeRepoPickerBar({
         });
         queryClient.invalidateQueries({ queryKey: ['repos'] });
 
-        for (const repo of registered) {
-          if (selectedRepoIds.has(repo.id)) continue;
-          addRepo(repo);
-          const fallbackBranch = repo.default_target_branch;
-          if (fallbackBranch) {
-            setTargetBranch(repo.id, fallbackBranch);
-          }
+        const availableRepos = registered
+          .filter((repo) => !selectedRepoIds.has(repo.id))
+          .sort((a, b) =>
+            getRepoDisplayName(a).localeCompare(getRepoDisplayName(b))
+          );
+
+        if (availableRepos.length === 0) {
+          setPickerError(
+            `Imported ${registered.length} repositories, but all of them ` +
+              'are already selected.'
+          );
+          return;
+        }
+
+        const selectedRepo = await chooseRepoFromList(availableRepos, true);
+        if (selectedRepo) {
+          await addRepoWithBranchSelection(selectedRepo);
         }
 
         if (failed.length > 0) {
@@ -336,11 +369,11 @@ export function CreateModeRepoPickerBar({
       'Failed to scan directory for git repositories'
     );
   }, [
-    addRepo,
+    addRepoWithBranchSelection,
+    chooseRepoFromList,
     queryClient,
     runPickerAction,
     selectedRepoIds,
-    setTargetBranch,
     t,
   ]);
 
